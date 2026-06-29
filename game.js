@@ -4,7 +4,7 @@
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.0';
+const VERSION = '1.1';
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
 const MAX_PLAYS_PER_DAY = 5;
@@ -160,21 +160,10 @@ function timerBarColor(ratio) {
 }
 
 // ── Visual helpers ────────────────────────────────────────────
-function makeGradientTexture(scene, key, topHex, bottomHex) {
-  if (scene.textures.exists(key)) return;
-  const g = scene.make.graphics({ x: 0, y: 0, add: false });
-  const steps = 40;
-  for (let i = 0; i < steps; i++) {
-    g.fillStyle(lerpColor(topHex, bottomHex, i / (steps - 1)));
-    g.fillRect(0, Math.floor(i * GH / steps), GW, Math.ceil(GH / steps) + 1);
-  }
-  g.generateTexture(key, GW, GH);
-  g.destroy();
-}
-
 function addPinkBackground(scene, depth = -100) {
-  makeGradientTexture(scene, 'bgGrad', C.bgTop, C.bgBottom);
-  scene.add.image(GW / 2, GH / 2, 'bgGrad').setDepth(depth);
+  // Simple layered rects — no generateTexture (Safari-safe)
+  scene.add.rectangle(GW / 2, GH / 2, GW, GH, 0xf8b4e8).setDepth(depth);
+  scene.add.rectangle(GW / 2, GH * 0.32, GW, GH * 0.55, 0xc878d8, 0.55).setDepth(depth);
 }
 
 function buildStyledPlayButton(scene, x, y, radius, onTap) {
@@ -194,50 +183,24 @@ function buildStyledPlayButton(scene, x, y, radius, onTap) {
 function makeTextures(scene) {
   if (!scene.textures.exists('knight')) {
     const g = scene.make.graphics({ x: 0, y: 0, add: false });
-    const w = 48;
-    const h = 52;
+    // Poster-style pink horse — circles/triangles only (no fillPath — Safari-safe)
     g.fillStyle(C.knightShadow, 1);
-    g.fillEllipse(26, 44, 20, 8);
+    g.fillEllipse(24, 46, 18, 6);
     g.fillStyle(C.knightShadow, 1);
-    g.beginPath();
-    g.moveTo(8, 42);
-    g.lineTo(10, 28);
-    g.lineTo(14, 18);
-    g.lineTo(22, 10);
-    g.lineTo(34, 8);
-    g.lineTo(40, 14);
-    g.lineTo(42, 22);
-    g.lineTo(38, 30);
-    g.lineTo(30, 36);
-    g.lineTo(18, 40);
-    g.closePath();
-    g.fillPath();
+    g.fillRoundedRect(10, 18, 28, 28, 10);
     g.fillStyle(C.knight, 1);
-    g.beginPath();
-    g.moveTo(6, 40);
-    g.lineTo(8, 26);
-    g.lineTo(12, 16);
-    g.lineTo(20, 8);
-    g.lineTo(32, 6);
-    g.lineTo(38, 12);
-    g.lineTo(40, 20);
-    g.lineTo(36, 28);
-    g.lineTo(28, 34);
-    g.lineTo(16, 38);
-    g.closePath();
-    g.fillPath();
+    g.fillRoundedRect(8, 14, 30, 30, 12);
     g.fillStyle(C.knightShadow, 1);
-    g.beginPath();
-    g.moveTo(12, 14);
-    g.quadraticCurveTo(8, 6, 14, 4);
-    g.quadraticCurveTo(18, 8, 16, 16);
-    g.closePath();
-    g.fillPath();
+    g.fillTriangle(8, 18, 4, 6, 16, 14);
+    g.fillStyle(C.knight, 1);
+    g.fillTriangle(10, 16, 6, 4, 18, 12);
     g.fillStyle(0xffffff, 1);
-    g.fillCircle(34, 14, 3);
+    g.fillCircle(30, 22, 4);
     g.fillStyle(0x333333, 1);
-    g.fillCircle(35, 14, 1.5);
-    g.generateTexture('knight', w, h);
+    g.fillCircle(31, 22, 2);
+    g.fillStyle(C.knightShadow, 1);
+    g.fillRoundedRect(34, 10, 10, 14, 4);
+    g.generateTexture('knight', 48, 52);
     g.destroy();
   }
 
@@ -680,15 +643,22 @@ class DailyLimitScene extends Phaser.Scene {
 }
 
 // ── Boot ──────────────────────────────────────────────────────
+class BootScene extends Phaser.Scene {
+  constructor() { super('BootScene'); }
+  create() {
+    this.scene.start('MenuScene');
+  }
+}
+
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
-  backgroundColor: '#4a2060',
+  backgroundColor: '#c878d8',
   scale: {
     mode: Phaser.Scale.FIT,
     autoCenter: Phaser.Scale.CENTER_BOTH,
     width: GW,
     height: GH,
   },
-  scene: [MenuScene, GameScene, EndScene, DailyLimitScene],
+  scene: [BootScene, MenuScene, GameScene, EndScene, DailyLimitScene],
 });
