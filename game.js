@@ -1,19 +1,18 @@
 // =============================================================
-//  Pink Knight Hop — v1.2  (6yo-friendly UX pass)
+//  Pink Knight Hop — v1.3  (goal-based: collect 10 coins)
 // =============================================================
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.2';
+const VERSION = '1.3';
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
 const MAX_PLAYS_PER_DAY = 5;
 
 const BOARD_SIZE = 8;
-const GAME_SECONDS = 45;
-const HUD_H = 50;
-const TIMER_H = 26;
-const BOARD_TOP = HUD_H + TIMER_H + 12;
+const COIN_GOAL = 10;
+const HUD_H = 58;
+const BOARD_TOP = HUD_H + 10;
 const BOARD_PX = Math.min(GW - 40, GH - BOARD_TOP - 20);
 const BOARD_LEFT = (GW - BOARD_PX) / 2;
 const CELL_PX = BOARD_PX / BOARD_SIZE;
@@ -54,9 +53,7 @@ const SFX = (() => {
   return {
     coin:   () => { tone(660,1320,'sine',0.08,0.24); setTimeout(()=>tone(880,1760,'sine',0.12,0.2),80); },
     jump:   () => tone(180,120,'triangle',0.08,0.14),
-    tick:   () => tone(600,600,'sine',0.04,0.08),
-    endWin: () => { tone(523,523,'sine',0.12,0.22); setTimeout(()=>tone(659,659,'sine',0.12,0.22),120); setTimeout(()=>tone(784,784,'sine',0.2,0.26),240); },
-    endBoop:() => tone(320,240,'sine',0.22,0.18),
+    win:    () => { [523,659,784,1046].forEach((f,i)=>setTimeout(()=>tone(f,f,'sine',0.18,0.28),i*110)); },
     hint:   () => tone(880,1100,'sine',0.06,0.1),
   };
 })();
@@ -105,11 +102,6 @@ function colRowFromPoint(x,y) {
   const row=Math.floor((y-BOARD_TOP)/CELL_PX);
   if (col<0||col>=BOARD_SIZE||row<0||row>=BOARD_SIZE) return null;
   return {col,row};
-}
-function timerColor(ratio) {
-  if (ratio>0.5) return 0x44dd44;
-  if (ratio>0.25) return 0xff9900;
-  return 0xff3333;
 }
 
 // ── Textures ──────────────────────────────────────────────────
@@ -177,6 +169,11 @@ class MenuScene extends Phaser.Scene {
 
     // Mini tutorial strip — board squares demo
     this._buildHowToPlay();
+
+    this.add.text(GW/2, 42, '🪙 × 10 = 🏆', {
+      fontSize:'26px', fontFamily:'Arial Black, sans-serif',
+      color:'#ffffff', stroke:'#6b3fa0', strokeThickness:5,
+    }).setOrigin(0.5).setY(GH/2 + 110);
 
     this.add.text(GW/2, 42, 'Pink Knight Hop', {
       fontSize:'40px', fontFamily:'Arial Black, sans-serif',
@@ -257,16 +254,12 @@ class GameScene extends Phaser.Scene {
     this.knightRow = 3;
     this.isJumping = false;
     this.isOver = false;
-    this.timeRemaining = GAME_SECONDS;
-    this.startTime = this.time.now;
-    this.lastTickSecond = -1;
     this.validMoves = [];
     this.coinCol = -1;
     this.coinRow = -1;
 
     this._buildBoard();
     this._buildHUD();
-    this._buildTimerBar();
 
     // Knight sprite
     const { x, y } = cellCenter(this.knightCol, this.knightRow);
@@ -314,35 +307,41 @@ class GameScene extends Phaser.Scene {
   }
 
   _buildHUD() {
-    this.add.image(28, HUD_H/2, 'coin').setScale(0.85).setDepth(30);
-    this.scoreText = this.add.text(54, HUD_H/2, '0', {
-      fontSize:'34px', fontFamily:'Arial Black, sans-serif',
+    // Coin icon + "X / 10" progress display, centered at top
+    this.add.image(GW/2 - 100, HUD_H/2, 'coin').setScale(0.9).setDepth(30);
+
+    this.scoreText = this.add.text(GW/2 - 72, HUD_H/2, '0', {
+      fontSize:'36px', fontFamily:'Arial Black, sans-serif',
       color:'#ffd700', stroke:'#6b3fa0', strokeThickness:4,
-    }).setOrigin(0,0.5).setDepth(30);
-  }
+    }).setOrigin(0, 0.5).setDepth(30);
 
-  _buildTimerBar() {
-    const y = HUD_H + TIMER_H/2;
-    this.timerBg   = this.add.graphics().setDepth(30);
-    this.timerFill = this.add.graphics().setDepth(31);
-    this._drawTimerBar(1);
-  }
+    this.add.text(GW/2 - 30, HUD_H/2, '/', {
+      fontSize:'30px', fontFamily:'Arial Black', color:'#ffffff88',
+    }).setOrigin(0, 0.5).setDepth(30);
 
-  _drawTimerBar(ratio) {
-    const x=BOARD_LEFT, y=HUD_H+2, h=TIMER_H-4, w=BOARD_PX;
-    const fw = Math.max(0, w*ratio);
-    const col = timerColor(ratio);
-    this.timerBg.clear();
-    this.timerBg.fillStyle(0x2d1b69,0.7);
-    this.timerBg.fillRoundedRect(x-2,y-2,w+4,h+4,9);
-    this.timerFill.clear();
-    if (fw>0) {
-      this.timerFill.fillStyle(col,1);
-      this.timerFill.fillRoundedRect(x,y,fw,h,7);
-      // Sheen stripe
-      this.timerFill.fillStyle(0xffffff,0.18);
-      this.timerFill.fillRoundedRect(x,y,fw,h*0.45,7);
+    this.add.text(GW/2 + 4, HUD_H/2, String(COIN_GOAL), {
+      fontSize:'36px', fontFamily:'Arial Black, sans-serif',
+      color:'#ffffff', stroke:'#6b3fa0', strokeThickness:4,
+    }).setOrigin(0, 0.5).setDepth(30);
+
+    // Coin dots progress strip (10 hollow circles fill as you collect)
+    this.coinDots = [];
+    const dotSpacing = 28;
+    const dotsX0 = GW/2 + 80;
+    for (let i = 0; i < COIN_GOAL; i++) {
+      const dot = this.add.circle(dotsX0 + i*dotSpacing, HUD_H/2, 9, C.gold, 0.2)
+        .setStrokeStyle(2, C.gold, 0.7).setDepth(30);
+      this.coinDots.push(dot);
     }
+  }
+
+  _updateProgressDots() {
+    this.coinDots.forEach((dot, i) => {
+      if (i < this.score) {
+        dot.setFillStyle(C.gold, 1);
+        dot.setStrokeStyle(2, C.goldDark, 1);
+      }
+    });
   }
 
   // ── Highlights: paint full cells green (and gold for reachable coin) ──
@@ -460,6 +459,7 @@ class GameScene extends Phaser.Scene {
     this.score++;
     this.scoreText.setText(String(this.score));
     SFX.coin();
+    this._updateProgressDots();
 
     // Score pop
     const pop = this.add.text(x,y-16,'+1',{
@@ -477,8 +477,13 @@ class GameScene extends Phaser.Scene {
     // Score text bounce
     this.tweens.add({ targets:this.scoreText, scaleX:1.4, scaleY:1.4, duration:100, yoyo:true });
 
+    if (this.score >= COIN_GOAL) {
+      this.time.delayedCall(300, () => this.endGame());
+      return;
+    }
+
     this._spawnCoin();
-    this._refreshHighlights(); // re-highlight including new coin position
+    this._refreshHighlights();
   }
 
   endGame() {
@@ -486,27 +491,11 @@ class GameScene extends Phaser.Scene {
     this.isOver = true;
     if (this._hlTween) this._hlTween.stop();
     this.hlGraphics.clear();
-    if (this.score>=10) SFX.endWin(); else SFX.endBoop();
-    this.time.delayedCall(400, ()=>this.scene.start('EndScene',{score:this.score}));
+    SFX.win();
+    this.time.delayedCall(500, ()=>this.scene.start('EndScene',{score:this.score}));
   }
 
-  update() {
-    if (this.isOver) return;
-    const elapsed = (this.time.now-this.startTime)/1000;
-    this.timeRemaining = Math.max(0, GAME_SECONDS-elapsed);
-    const ratio = this.timeRemaining/GAME_SECONDS;
-    this._drawTimerBar(ratio);
-
-    if (this.timeRemaining<=5 && this.timeRemaining>0) {
-      const sec=Math.ceil(this.timeRemaining);
-      if (sec!==this.lastTickSecond) { this.lastTickSecond=sec; SFX.tick(); }
-      const shake=Math.sin(this.time.now/40)*2;
-      this.timerFill.x=shake; this.timerBg.x=shake;
-    } else {
-      this.timerFill.x=0; this.timerBg.x=0;
-    }
-    if (this.timeRemaining<=0) this.endGame();
-  }
+  update() {}
 }
 
 // ── END ───────────────────────────────────────────────────────
@@ -514,26 +503,26 @@ class EndScene extends Phaser.Scene {
   constructor() { super('EndScene'); }
   preload() { makeTextures(this); }
   create(data) {
-    const score=(data&&data.score)||0;
     addBg(this);
-    this.add.rectangle(GW/2,GH/2,GW,GH,0x2d1b69,0.38);
-    if (score>=10) this._confetti();
+    this.add.rectangle(GW/2,GH/2,GW,GH,0x2d1b69,0.35);
+    this._confetti();
 
-    this.add.text(GW/2, GH/2-140, '⏰', {fontSize:'60px'}).setOrigin(0.5);
-    this.add.text(GW/2, GH/2-70, '¡Se acabó el tiempo!', {
-      fontSize:'36px', fontFamily:'Arial Black', color:'#ffb3d9', stroke:'#ffffff', strokeThickness:5,
+    // Big trophy
+    this.add.text(GW/2, GH/2-150, '🏆', {fontSize:'80px'}).setOrigin(0.5);
+
+    this.add.text(GW/2, GH/2-54, '¡Lo lograste!', {
+      fontSize:'48px', fontFamily:'Arial Black', color:'#ffd700',
+      stroke:'#6b3fa0', strokeThickness:7,
     }).setOrigin(0.5);
 
-    this.add.image(GW/2-56,GH/2+12,'coin').setScale(1.6);
-    this.add.text(GW/2+10,GH/2+12,String(score),{
-      fontSize:'70px', fontFamily:'Arial Black', color:'#ffd700', stroke:'#6b3fa0', strokeThickness:6,
-    }).setOrigin(0,0.5);
+    // 10 coin icons in a row
+    for (let i=0;i<COIN_GOAL;i++) {
+      this.add.image(GW/2 - (COIN_GOAL/2-0.5)*36 + i*36, GH/2+18, 'coin').setScale(0.7);
+    }
 
-    const stars = score>=10?3:score>=5?2:1;
+    // 3 stars — always, it's always a win
     for (let i=0;i<3;i++)
-      this.add.text(GW/2-44+i*44, GH/2+90, i<stars?'⭐':'☆',{
-        fontSize:'36px', color:i<stars?'#ffd700':'#ffffff44',
-      }).setOrigin(0.5);
+      this.add.text(GW/2-44+i*44, GH/2+80, '⭐', {fontSize:'40px'}).setOrigin(0.5);
 
     buildPlayButton(this, GW/2-80, GH/2+170, 52, ()=>tryStartGame(this,['EndScene']));
     const home=this.add.circle(GW/2+80,GH/2+170,48,0xc878d8).setInteractive({useHandCursor:true});
