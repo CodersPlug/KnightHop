@@ -1,312 +1,257 @@
 // =============================================================
-//  Pink Knight Hop — chess knight L-jumps, coin rush for ~6yo
+//  Pink Knight Hop — v1.2  (6yo-friendly UX pass)
 // =============================================================
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.1';
+const VERSION = '1.2';
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
 const MAX_PLAYS_PER_DAY = 5;
 
 const BOARD_SIZE = 8;
 const GAME_SECONDS = 45;
-const TIMER_H = 52;
-const HUD_H = 44;
-const BOARD_TOP = HUD_H + TIMER_H + 8;
+const HUD_H = 50;
+const TIMER_H = 26;
+const BOARD_TOP = HUD_H + TIMER_H + 12;
 const BOARD_PX = Math.min(GW - 40, GH - BOARD_TOP - 20);
 const BOARD_LEFT = (GW - BOARD_PX) / 2;
 const CELL_PX = BOARD_PX / BOARD_SIZE;
-const TIMER_BAR_H = 18;
 
 const KNIGHT_OFFSETS = [
-  [-2, -1], [-2, 1], [-1, -2], [-1, 2],
-  [1, -2], [1, 2], [2, -1], [2, 1],
+  [-2,-1],[-2,1],[-1,-2],[-1,2],[1,-2],[1,2],[2,-1],[2,1],
 ];
 
 const C = {
-  pink: 0xffb3d9,
-  cream: 0xfff5f0,
-  knight: 0xff6eb4,
-  knightShadow: 0xe04090,
-  gold: 0xffd700,
-  purple: 0x6b3fa0,
-  bgTop: '#c878d8',
-  bgBottom: '#f8b4e8',
+  light:      0xffe8f0,  // light board square
+  dark:       0xf5c0d8,  // dark board square
+  knight:     0xff6eb4,
+  knightDark: 0xe04090,
+  gold:       0xffd700,
+  goldDark:   0xcc9900,
+  jumpGreen:  0x44dd44,  // valid-move highlight fill
+  jumpDark:   0x229922,  // valid-move border
+  coinReach:  0xffee00,  // cell tint when coin is reachable
+  purple:     0x6b3fa0,
 };
 
-// ── SFX (Web Audio) ───────────────────────────────────────────
+// ── SFX ──────────────────────────────────────────────────────
 const SFX = (() => {
   let ctx = null;
-  const get = () => {
-    if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)();
-    return ctx;
-  };
-  const tone = (freq, freqEnd, type, dur, vol) => {
+  const get = () => { if (!ctx) ctx = new (window.AudioContext || window.webkitAudioContext)(); return ctx; };
+  const tone = (f, fe, type, dur, vol) => {
     try {
-      const c = get();
-      const o = c.createOscillator();
-      const g = c.createGain();
-      o.connect(g);
-      g.connect(c.destination);
-      o.type = type || 'sine';
-      o.frequency.setValueAtTime(freq, c.currentTime);
-      if (freqEnd) o.frequency.exponentialRampToValueAtTime(freqEnd, c.currentTime + dur);
-      g.gain.setValueAtTime(vol || 0.22, c.currentTime);
-      g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + dur);
-      o.start(c.currentTime);
-      o.stop(c.currentTime + dur + 0.01);
-    } catch (_) {}
+      const c=get(), o=c.createOscillator(), g=c.createGain();
+      o.connect(g); g.connect(c.destination);
+      o.type = type||'sine';
+      o.frequency.setValueAtTime(f, c.currentTime);
+      if (fe) o.frequency.exponentialRampToValueAtTime(fe, c.currentTime+dur);
+      g.gain.setValueAtTime(vol||0.22, c.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.001, c.currentTime+dur);
+      o.start(c.currentTime); o.stop(c.currentTime+dur+0.01);
+    } catch(_) {}
   };
   return {
-    coin: () => tone(880, 1320, 'sine', 0.14, 0.24),
-    jump: () => tone(180, 120, 'triangle', 0.08, 0.14),
-    tick: () => tone(600, 600, 'sine', 0.04, 0.08),
-    endWin: () => {
-      tone(523, 523, 'sine', 0.12, 0.22);
-      setTimeout(() => tone(659, 659, 'sine', 0.12, 0.22), 120);
-      setTimeout(() => tone(784, 784, 'sine', 0.2, 0.26), 240);
-    },
-    endBoop: () => tone(320, 240, 'sine', 0.22, 0.18),
+    coin:   () => { tone(660,1320,'sine',0.08,0.24); setTimeout(()=>tone(880,1760,'sine',0.12,0.2),80); },
+    jump:   () => tone(180,120,'triangle',0.08,0.14),
+    tick:   () => tone(600,600,'sine',0.04,0.08),
+    endWin: () => { tone(523,523,'sine',0.12,0.22); setTimeout(()=>tone(659,659,'sine',0.12,0.22),120); setTimeout(()=>tone(784,784,'sine',0.2,0.26),240); },
+    endBoop:() => tone(320,240,'sine',0.22,0.18),
+    hint:   () => tone(880,1100,'sine',0.06,0.1),
   };
 })();
 
-// ── Daily play limit (shared with PhaserLab via localStorage) ───
+// ── Daily play limit ──────────────────────────────────────────
 const DailyPlays = {
-  today() { return new Date().toISOString().slice(0, 10); },
+  today() { return new Date().toISOString().slice(0,10); },
   load() {
-    const empty = { date: this.today(), count: 0, versions: {} };
+    const empty={date:this.today(),count:0,versions:{}};
     try {
-      const raw = localStorage.getItem(PLAY_STORAGE_KEY);
+      const raw=localStorage.getItem(PLAY_STORAGE_KEY);
       if (!raw) return empty;
-      const data = JSON.parse(raw);
-      if (!data.versions) data.versions = {};
-      let dirty = false;
-      if (data.date !== this.today()) {
-        data.date = this.today();
-        data.count = 0;
-        dirty = true;
-      }
-      if (data.versions[GAME_ID] !== VERSION) {
-        data.count = 0;
-        data.versions[GAME_ID] = VERSION;
-        dirty = true;
-      }
+      const data=JSON.parse(raw);
+      if (!data.versions) data.versions={};
+      let dirty=false;
+      if (data.date!==this.today()){data.date=this.today();data.count=0;dirty=true;}
+      if (data.versions[GAME_ID]!==VERSION){data.count=0;data.versions[GAME_ID]=VERSION;dirty=true;}
       if (dirty) this.persist(data);
       return data;
-    } catch (_) {
-      return empty;
-    }
+    } catch(_){return empty;}
   },
-  persist(data) {
-    if (!data.versions) data.versions = {};
-    data.versions[GAME_ID] = VERSION;
-    localStorage.setItem(PLAY_STORAGE_KEY, JSON.stringify(data));
-  },
-  get() { return this.load(); },
-  remaining() { return Math.max(0, MAX_PLAYS_PER_DAY - this.load().count); },
-  canPlay() { return this.remaining() > 0; },
-  record() {
-    const data = this.load();
-    data.count++;
-    this.persist(data);
-  },
-  reset() { localStorage.removeItem(PLAY_STORAGE_KEY); },
+  persist(data) { if(!data.versions)data.versions={}; data.versions[GAME_ID]=VERSION; localStorage.setItem(PLAY_STORAGE_KEY,JSON.stringify(data)); },
+  remaining() { return Math.max(0,MAX_PLAYS_PER_DAY-this.load().count); },
+  canPlay()   { return this.remaining()>0; },
+  record()    { const d=this.load(); d.count++; this.persist(d); },
+  reset()     { localStorage.removeItem(PLAY_STORAGE_KEY); },
 };
 
-function tryStartGame(fromScene, stopScenes = []) {
-  if (!DailyPlays.canPlay()) {
-    stopScenes.forEach(k => fromScene.scene.stop(k));
-    fromScene.scene.start('DailyLimitScene');
-    return;
-  }
+function tryStartGame(scene, stop=[]) {
+  if (!DailyPlays.canPlay()) { stop.forEach(k=>scene.scene.stop(k)); scene.scene.start('DailyLimitScene'); return; }
   DailyPlays.record();
-  stopScenes.forEach(k => fromScene.scene.stop(k));
-  fromScene.scene.start('GameScene');
+  stop.forEach(k=>scene.scene.stop(k));
+  scene.scene.start('GameScene');
 }
 
 // ── Board helpers ─────────────────────────────────────────────
-function cellCenter(col, row) {
-  return {
-    x: BOARD_LEFT + (col + 0.5) * CELL_PX,
-    y: BOARD_TOP + (row + 0.5) * CELL_PX,
-  };
+function cellCenter(col,row) {
+  return { x: BOARD_LEFT+(col+0.5)*CELL_PX, y: BOARD_TOP+(row+0.5)*CELL_PX };
+}
+function getValidMoves(col,row) {
+  return KNIGHT_OFFSETS.map(([dc,dr])=>({col:col+dc,row:row+dr}))
+    .filter(({col:c,row:r})=>c>=0&&c<BOARD_SIZE&&r>=0&&r<BOARD_SIZE);
+}
+function colRowFromPoint(x,y) {
+  const col=Math.floor((x-BOARD_LEFT)/CELL_PX);
+  const row=Math.floor((y-BOARD_TOP)/CELL_PX);
+  if (col<0||col>=BOARD_SIZE||row<0||row>=BOARD_SIZE) return null;
+  return {col,row};
+}
+function timerColor(ratio) {
+  if (ratio>0.5) return 0x44dd44;
+  if (ratio>0.25) return 0xff9900;
+  return 0xff3333;
 }
 
-function getValidMoves(col, row) {
-  return KNIGHT_OFFSETS
-    .map(([dc, dr]) => ({ col: col + dc, row: row + dr }))
-    .filter(({ col: c, row: r }) => c >= 0 && c < BOARD_SIZE && r >= 0 && r < BOARD_SIZE);
+// ── Textures ──────────────────────────────────────────────────
+function makeTextures(scene) {
+  // Knight — poster-style pink horse (Safari-safe: no fillPath)
+  if (!scene.textures.exists('knight')) {
+    const g = scene.make.graphics({x:0,y:0,add:false});
+    g.fillStyle(C.knightDark,1); g.fillEllipse(24,50,20,6);      // shadow
+    g.fillStyle(C.knightDark,1); g.fillRoundedRect(10,20,28,28,10); // body dark
+    g.fillStyle(C.knight,1);     g.fillRoundedRect(8,16,30,30,12);  // body
+    g.fillStyle(C.knightDark,1); g.fillTriangle(8,20,4,6,16,16);    // ear dark
+    g.fillStyle(C.knight,1);     g.fillTriangle(10,18,6,4,18,14);   // ear
+    g.fillStyle(0xffffff,1);     g.fillCircle(30,24,5);             // eye white
+    g.fillStyle(0x333333,1);     g.fillCircle(31,24,2.5);           // pupil
+    g.fillStyle(0xffeeaa,1);     g.fillCircle(32,23,1);             // eye shine
+    g.fillStyle(C.knightDark,1); g.fillRoundedRect(34,10,10,14,4); // mane
+    g.generateTexture('knight',52,56);
+    g.destroy();
+  }
+
+  // Coin — big shiny gold star-coin
+  if (!scene.textures.exists('coin')) {
+    const g = scene.make.graphics({x:0,y:0,add:false});
+    const r=22;
+    g.fillStyle(C.goldDark,1); g.fillCircle(r,r,r);
+    g.fillStyle(C.gold,1);     g.fillCircle(r,r,r-2);
+    g.fillStyle(0xffff88,0.9); g.fillCircle(r-6,r-7,7);   // big shine
+    g.fillStyle(0xffffff,0.6); g.fillCircle(r-8,r-9,3);   // tiny shine
+    g.lineStyle(3,C.goldDark,1); g.strokeCircle(r,r,r-2);
+    // $ symbol in gold coin
+    g.fillStyle(C.goldDark,0.7);
+    g.fillRect(r-2,r-9,4,18);
+    g.fillRect(r-6,r-9,12,4);
+    g.fillRect(r-6,r-1,12,4);
+    g.fillRect(r-6,r+5,12,4);
+    g.generateTexture('coin',r*2,r*2);
+    g.destroy();
+  }
 }
 
-function colRowFromPoint(x, y) {
-  const col = Math.floor((x - BOARD_LEFT) / CELL_PX);
-  const row = Math.floor((y - BOARD_TOP) / CELL_PX);
-  if (col < 0 || col >= BOARD_SIZE || row < 0 || row >= BOARD_SIZE) return null;
-  return { col, row };
-}
-
-function lerpColor(c1, c2, t) {
-  const a = Phaser.Display.Color.ValueToColor(c1);
-  const b = Phaser.Display.Color.ValueToColor(c2);
-  const r = Phaser.Display.Color.Interpolate.ColorWithColor(a, b, 100, Math.floor(t * 100));
-  return Phaser.Display.Color.GetColor(r.r, r.g, r.b);
-}
-
-function timerBarColor(ratio) {
-  if (ratio > 0.5) return '#ffd700';
-  if (ratio > 0.25) return '#ff8800';
-  return '#ff3333';
-}
-
-// ── Visual helpers ────────────────────────────────────────────
-function addPinkBackground(scene, depth = -100) {
-  // Simple layered rects — no generateTexture (Safari-safe)
-  scene.add.rectangle(GW / 2, GH / 2, GW, GH, 0xf8b4e8).setDepth(depth);
-  scene.add.rectangle(GW / 2, GH * 0.32, GW, GH * 0.55, 0xc878d8, 0.55).setDepth(depth);
-}
-
-function buildStyledPlayButton(scene, x, y, radius, onTap) {
-  const glow = scene.add.circle(x, y, radius + 14, 0xff6eb4, 0.25);
-  scene.tweens.add({ targets: glow, scale: 1.15, alpha: 0.12, duration: 700, yoyo: true, repeat: -1 });
-  const shadow = scene.add.ellipse(x, y + radius * 0.55, radius * 1.6, radius * 0.35, 0x000000, 0.15);
-  const btn = scene.add.circle(x, y, radius, 0xff6eb4).setInteractive({ useHandCursor: true });
-  scene.add.circle(x, y - radius * 0.22, radius * 0.72, 0xffb3e0, 0.45);
-  const icon = scene.add.text(x, y + 2, '\u25B6', {
-    fontSize: Math.floor(radius * 0.75) + 'px', color: '#ffffff',
-  }).setOrigin(0.5);
-  scene.tweens.add({ targets: btn, scale: 1.06, duration: 550, yoyo: true, repeat: -1 });
-  btn.on('pointerdown', onTap);
+// ── Play button ───────────────────────────────────────────────
+function buildPlayButton(scene, x, y, radius, onTap) {
+  const glow = scene.add.circle(x,y,radius+16,0xff6eb4,0.25);
+  scene.tweens.add({targets:glow,scale:1.18,alpha:0.1,duration:700,yoyo:true,repeat:-1});
+  scene.add.ellipse(x,y+radius*0.55,radius*1.6,radius*0.35,0x000000,0.15);
+  const btn = scene.add.circle(x,y,radius,0xff6eb4).setInteractive({useHandCursor:true});
+  scene.add.circle(x,y-radius*0.22,radius*0.72,0xffb3e0,0.45);
+  scene.add.text(x,y+3,'▶',{fontSize:Math.floor(radius*0.75)+'px',color:'#ffffff'}).setOrigin(0.5);
+  scene.tweens.add({targets:btn,scale:1.08,duration:550,yoyo:true,repeat:-1});
+  btn.on('pointerdown',onTap);
   return btn;
 }
 
-function makeTextures(scene) {
-  if (!scene.textures.exists('knight')) {
-    const g = scene.make.graphics({ x: 0, y: 0, add: false });
-    // Poster-style pink horse — circles/triangles only (no fillPath — Safari-safe)
-    g.fillStyle(C.knightShadow, 1);
-    g.fillEllipse(24, 46, 18, 6);
-    g.fillStyle(C.knightShadow, 1);
-    g.fillRoundedRect(10, 18, 28, 28, 10);
-    g.fillStyle(C.knight, 1);
-    g.fillRoundedRect(8, 14, 30, 30, 12);
-    g.fillStyle(C.knightShadow, 1);
-    g.fillTriangle(8, 18, 4, 6, 16, 14);
-    g.fillStyle(C.knight, 1);
-    g.fillTriangle(10, 16, 6, 4, 18, 12);
-    g.fillStyle(0xffffff, 1);
-    g.fillCircle(30, 22, 4);
-    g.fillStyle(0x333333, 1);
-    g.fillCircle(31, 22, 2);
-    g.fillStyle(C.knightShadow, 1);
-    g.fillRoundedRect(34, 10, 10, 14, 4);
-    g.generateTexture('knight', 48, 52);
-    g.destroy();
-  }
-
-  if (!scene.textures.exists('coin')) {
-    const g = scene.make.graphics({ x: 0, y: 0, add: false });
-    const r = 18;
-    g.fillStyle(0xc9a020, 1);
-    g.fillCircle(r, r, r);
-    g.fillStyle(0xffd700, 1);
-    g.fillCircle(r, r, r - 2);
-    g.fillStyle(0xffee88, 0.7);
-    g.fillEllipse(r - 5, r - 6, 8, 6);
-    g.lineStyle(2, 0xffaa00, 0.6);
-    g.strokeCircle(r, r, r - 2);
-    g.generateTexture('coin', r * 2, r * 2);
-    g.destroy();
-  }
+function addBg(scene) {
+  scene.add.rectangle(GW/2,GH/2,GW,GH,0xf8b4e8).setDepth(-100);
+  scene.add.rectangle(GW/2,GH*0.3,GW,GH*0.55,0xc878d8,0.55).setDepth(-100);
 }
 
-function addDecorativeStrip(scene) {
-  const y = BOARD_TOP + BOARD_PX + 14;
-  const colors = [0xff6eb4, 0xffd700, 0xffb3d9, 0xc878d8, 0xffee88];
-  for (let i = 0; i < 12; i++) {
-    const x = BOARD_LEFT + (i + 0.5) * (BOARD_PX / 12);
-    scene.add.circle(x, y, 6, colors[i % colors.length], 0.7);
-  }
-}
-
-function spawnConfetti(scene, count = 28) {
-  const colors = [0xff6eb4, 0xffd700, 0xffb3d9, 0xc878d8, 0xffee88];
-  for (let i = 0; i < count; i++) {
-    const piece = scene.add.circle(
-      Phaser.Math.Between(40, GW - 40), -20,
-      Phaser.Math.Between(4, 10), colors[i % colors.length], 0.9
-    );
-    scene.tweens.add({
-      targets: piece,
-      y: GH + 30,
-      angle: Phaser.Math.Between(-360, 360),
-      duration: Phaser.Math.Between(2000, 4000),
-      delay: Phaser.Math.Between(0, 1200),
-      onComplete: () => piece.destroy(),
-    });
-  }
-}
-
-function starCountForScore(score) {
-  if (score >= 10) return 3;
-  if (score >= 5) return 2;
-  return 1;
-}
-
-// ── Menu ─────────────────────────────────────────────────────
+// ── MENU ─────────────────────────────────────────────────────
 class MenuScene extends Phaser.Scene {
   constructor() { super('MenuScene'); }
-
   preload() { makeTextures(this); }
-
   create() {
-    addPinkBackground(this);
+    addBg(this);
 
-    const knight = this.add.image(GW / 2, GH / 2 - 130, 'knight').setScale(2.5);
-    this.tweens.add({
-      targets: knight, y: knight.y - 8, duration: 1200, yoyo: true, repeat: -1, ease: 'Sine.inOut',
-    });
+    // Mini tutorial strip — board squares demo
+    this._buildHowToPlay();
 
-    this.add.text(GW / 2, GH / 2 - 20, 'Pink Knight Hop', {
-      fontSize: '46px', fontFamily: 'Arial Black, sans-serif',
-      color: '#ffd700', stroke: '#ff6eb4', strokeThickness: 8,
-    }).setOrigin(0.5);
-
-    this.add.text(GW / 2, GH / 2 + 36, '\uD83E\uDE99  Collect coins!', {
-      fontSize: '22px', fontFamily: 'Arial, sans-serif', color: '#ffffff',
+    this.add.text(GW/2, 42, 'Pink Knight Hop', {
+      fontSize:'40px', fontFamily:'Arial Black, sans-serif',
+      color:'#ffd700', stroke:'#ff6eb4', strokeThickness:8,
     }).setOrigin(0.5);
 
     const rem = DailyPlays.remaining();
-    const startX = GW / 2 - (MAX_PLAYS_PER_DAY - 1) * 22;
-    for (let i = 0; i < MAX_PLAYS_PER_DAY; i++) {
-      this.add.text(startX + i * 44, GH / 2 + 78, i < rem ? '\u2B50' : '\u2606', {
-        fontSize: '28px', color: i < rem ? '#ffd700' : '#ffffff44',
+    const sx = GW/2-(MAX_PLAYS_PER_DAY-1)*22;
+    for (let i=0;i<MAX_PLAYS_PER_DAY;i++) {
+      this.add.text(sx+i*44, GH-52, i<rem?'⭐':'☆', {
+        fontSize:'28px', color: i<rem?'#ffd700':'#ffffff44',
       }).setOrigin(0.5);
     }
 
-    buildStyledPlayButton(this, GW / 2, GH / 2 + 150, 64, () => tryStartGame(this));
+    buildPlayButton(this, GW/2, GH-80, 52, ()=>tryStartGame(this));
 
-    const versionLabel = this.add.text(8, GH - 6, 'v' + VERSION, {
-      fontSize: '13px', fontFamily: 'monospace', color: '#ffffff88',
-    }).setOrigin(0, 1).setInteractive();
-    let holdEvt = null;
-    versionLabel.on('pointerdown', () => {
-      holdEvt = this.time.delayedCall(3000, () => { DailyPlays.reset(); this.scene.restart(); });
+    const vl = this.add.text(8,GH-6,'v'+VERSION,{fontSize:'13px',fontFamily:'monospace',color:'#ffffff88'})
+      .setOrigin(0,1).setInteractive();
+    let hold=null;
+    vl.on('pointerdown',()=>{ hold=this.time.delayedCall(3000,()=>{DailyPlays.reset();this.scene.restart();}); });
+    const cancel=()=>{ if(hold){hold.remove();hold=null;} };
+    vl.on('pointerup',cancel); vl.on('pointerout',cancel);
+  }
+
+  _buildHowToPlay() {
+    // Show 3 demo squares + coin + arrow to explain the game
+    const demoY = GH/2 - 10;
+    const sq = 72, gap = 16;
+    const labels = ['🐴','🟢','🏆'];
+    const colors = [0xffe8f0, 0x44dd44, 0xffe8f0];
+    const xPositions = [GW/2 - sq - gap, GW/2, GW/2 + sq + gap];
+
+    // Outer wrapper
+    this.add.rectangle(GW/2, demoY, sq*3+gap*4+40, sq+60, 0x000000, 0.25)
+      .setStrokeStyle(2,0xffffff,0.2);
+
+    this.add.text(GW/2, demoY - sq/2 - 18, '¿Cómo jugar?', {
+      fontSize:'16px', fontFamily:'Arial Black', color:'#ffffff', stroke:'#000000', strokeThickness:3,
+    }).setOrigin(0.5);
+
+    xPositions.forEach((x,i) => {
+      // Square
+      this.add.rectangle(x, demoY, sq, sq, colors[i])
+        .setStrokeStyle(3, i===1?C.jumpDark:0xaaaaaa, 1);
+      // Icon
+      this.add.text(x, demoY, labels[i], {fontSize:'36px'}).setOrigin(0.5);
+      // Arrow between squares
+      if (i<2) {
+        this.add.text(x+sq/2+gap/2, demoY, '→', {
+          fontSize:'26px', color:'#ffffff', stroke:'#000000', strokeThickness:3,
+        }).setOrigin(0.5);
+      }
     });
-    const cancelHold = () => { if (holdEvt) { holdEvt.remove(); holdEvt = null; } };
-    versionLabel.on('pointerup', cancelHold);
-    versionLabel.on('pointerout', cancelHold);
+
+    // Captions
+    ['Tu caballo','¡Saltá aquí!','¡Moneda!'].forEach((t,i) => {
+      this.add.text(xPositions[i], demoY+sq/2+12, t, {
+        fontSize:'12px', fontFamily:'Arial, sans-serif', color:'#ffffff',
+        stroke:'#000000', strokeThickness:2,
+      }).setOrigin(0.5);
+    });
+
+    // Animated bounce arrow pointing at the green square
+    const arrow = this.add.text(xPositions[1], demoY-sq/2-30, '👆', {fontSize:'30px'}).setOrigin(0.5);
+    this.tweens.add({targets:arrow, y:arrow.y+8, duration:500, yoyo:true, repeat:-1});
   }
 }
 
-// ── Main game ─────────────────────────────────────────────────
+// ── GAME ─────────────────────────────────────────────────────
 class GameScene extends Phaser.Scene {
   constructor() { super('GameScene'); }
-
   preload() { makeTextures(this); }
 
   create() {
-    addPinkBackground(this);
+    addBg(this);
     this.score = 0;
     this.knightCol = 3;
     this.knightRow = 3;
@@ -316,349 +261,323 @@ class GameScene extends Phaser.Scene {
     this.startTime = this.time.now;
     this.lastTickSecond = -1;
     this.validMoves = [];
+    this.coinCol = -1;
+    this.coinRow = -1;
 
-    this.buildBoard();
-    this.buildHUD();
-    this.buildTimerBar();
-    addDecorativeStrip(this);
+    this._buildBoard();
+    this._buildHUD();
+    this._buildTimerBar();
 
+    // Knight sprite
     const { x, y } = cellCenter(this.knightCol, this.knightRow);
-    this.knight = this.add.image(x, y, 'knight').setDepth(20);
-    this.knight.setScale(CELL_PX / 52);
+    this.knight = this.add.image(x, y, 'knight').setDepth(20).setScale(CELL_PX/56);
 
-    this.highlightLayer = this.add.container(0, 0).setDepth(5);
+    // Coin sprite and sparkle ring
     this.coinSprite = null;
-    this.spawnCoin();
+    this.coinRing = null;
+    this._spawnCoin();
+    this._refreshHighlights();
 
-    this.refreshHighlights();
-
-    this.input.on('pointerdown', (pointer) => this.onBoardTap(pointer.x, pointer.y));
-  }
-
-  buildBoard() {
-    const frame = this.add.graphics().setDepth(1);
-    frame.lineStyle(5, 0xffd700, 0.8);
-    frame.strokeRoundedRect(BOARD_LEFT - 6, BOARD_TOP - 6, BOARD_PX + 12, BOARD_PX + 12, 12);
-    frame.lineStyle(2, C.purple, 0.5);
-    frame.strokeRoundedRect(BOARD_LEFT - 3, BOARD_TOP - 3, BOARD_PX + 6, BOARD_PX + 6, 10);
-
-    this.cellRects = [];
-    for (let row = 0; row < BOARD_SIZE; row++) {
-      for (let col = 0; col < BOARD_SIZE; col++) {
-        const light = (col + row) % 2 === 0;
-        const color = light ? C.pink : C.cream;
-        const { x, y } = cellCenter(col, row);
-        const rect = this.add.rectangle(x, y, CELL_PX - 2, CELL_PX - 2, color).setDepth(2);
-        rect.setData('col', col);
-        rect.setData('row', row);
-        this.cellRects.push(rect);
-      }
-    }
-  }
-
-  buildHUD() {
-    this.add.image(28, HUD_H / 2, 'coin').setScale(0.9).setDepth(30);
-    this.scoreText = this.add.text(52, HUD_H / 2, '0', {
-      fontSize: '32px', fontFamily: 'Arial Black, sans-serif', color: '#ffd700',
-      stroke: '#6b3fa0', strokeThickness: 4,
-    }).setOrigin(0, 0.5).setDepth(30);
-  }
-
-  buildTimerBar() {
-    const barY = HUD_H + TIMER_H / 2;
-    this.timerBarX = BOARD_LEFT;
-    this.timerBarY = barY;
-    this.timerBarW = BOARD_PX;
-
-    this.timerBarBg = this.add.graphics().setDepth(30);
-    this.timerBarFill = this.add.graphics().setDepth(31);
-    this.drawTimerBar(1);
-  }
-
-  drawTimerBar(ratio) {
-    const x = this.timerBarX;
-    const y = this.timerBarY - TIMER_BAR_H / 2;
-    const w = this.timerBarW;
-    const h = TIMER_BAR_H;
-    const fillW = Math.max(0, w * ratio);
-    const color = Phaser.Display.Color.HexStringToColor(timerBarColor(ratio)).color;
-
-    this.timerBarBg.clear();
-    this.timerBarBg.fillStyle(0x2d1b69, 0.6);
-    this.timerBarBg.fillRoundedRect(x - 2, y - 2, w + 4, h + 4, 10);
-    this.timerBarBg.lineStyle(2, 0x4a2060, 0.9);
-    this.timerBarBg.strokeRoundedRect(x - 2, y - 2, w + 4, h + 4, 10);
-
-    this.timerBarFill.clear();
-    if (fillW > 0) {
-      this.timerBarFill.fillStyle(color, 1);
-      this.timerBarFill.fillRoundedRect(x, y, fillW, h, 8);
-    }
-  }
-
-  refreshHighlights() {
-    this.validMoves = getValidMoves(this.knightCol, this.knightRow);
-    this.highlightLayer.removeAll(true);
-
-    this.validMoves.forEach(({ col, row }) => {
-      const { x, y } = cellCenter(col, row);
-      const glow = this.add.circle(x, y, CELL_PX * 0.38, 0xffd700, 0.35);
-      const ring = this.add.circle(x, y, CELL_PX * 0.32, 0xffee88, 0.2);
-      ring.setStrokeStyle(2, 0xffd700, 0.7);
-      this.highlightLayer.add([glow, ring]);
-      this.tweens.add({
-        targets: [glow, ring],
-        scale: 1.08,
-        alpha: { from: 0.35, to: 0.55 },
-        duration: 600,
-        yoyo: true,
-        repeat: -1,
-        ease: 'Sine.inOut',
-      });
+    // "Tap a green square!" hint — shown for first 3 seconds
+    this.hintText = this.add.text(GW/2, BOARD_TOP + BOARD_PX + 14, '👆 ¡Tocá un cuadrado verde!', {
+      fontSize:'20px', fontFamily:'Arial Black, sans-serif',
+      color:'#44dd44', stroke:'#000000', strokeThickness:4,
+    }).setOrigin(0.5).setDepth(50);
+    this.tweens.add({ targets:this.hintText, alpha:{from:0.5,to:1}, duration:400, yoyo:true, repeat:-1 });
+    this.time.delayedCall(3500, () => {
+      this.tweens.add({ targets:this.hintText, alpha:0, duration:600, onComplete:()=>this.hintText.destroy() });
     });
+
+    this.input.on('pointerdown', (p) => this._onTap(p.x, p.y));
   }
 
-  spawnCoin() {
-    if (this.coinSprite) {
-      this.coinSprite.destroy();
-      this.coinSprite = null;
-    }
-    const occupied = new Set([`${this.knightCol},${this.knightRow}`]);
-    const empties = [];
-    for (let row = 0; row < BOARD_SIZE; row++) {
-      for (let col = 0; col < BOARD_SIZE; col++) {
-        const key = `${col},${row}`;
-        if (!occupied.has(key)) empties.push({ col, row });
+  _buildBoard() {
+    // Frame
+    const g = this.add.graphics().setDepth(1);
+    g.lineStyle(5, C.gold, 0.9);
+    g.strokeRoundedRect(BOARD_LEFT-6, BOARD_TOP-6, BOARD_PX+12, BOARD_PX+12, 12);
+
+    // Cells — just plain light/dark, no tinting yet
+    this.cellRects = [];
+    for (let row=0;row<BOARD_SIZE;row++) {
+      for (let col=0;col<BOARD_SIZE;col++) {
+        const light = (col+row)%2===0;
+        const {x,y} = cellCenter(col,row);
+        const r = this.add.rectangle(x,y,CELL_PX-1,CELL_PX-1, light?C.light:C.dark).setDepth(2);
+        r.setData('col',col); r.setData('row',row);
+        this.cellRects.push(r);
       }
     }
-    if (!empties.length) return;
-    const spot = Phaser.Utils.Array.GetRandom(empties);
-    const { x, y } = cellCenter(spot.col, spot.row);
-    this.coinCol = spot.col;
-    this.coinRow = spot.row;
-    this.coinSprite = this.add.image(x, y, 'coin').setDepth(15).setScale(CELL_PX / 40);
-    this.tweens.add({
-      targets: this.coinSprite,
-      y: y - 4,
-      duration: 800,
+
+    // Highlight layer — full-cell green fills drawn here
+    this.hlGraphics = this.add.graphics().setDepth(3);
+  }
+
+  _buildHUD() {
+    this.add.image(28, HUD_H/2, 'coin').setScale(0.85).setDepth(30);
+    this.scoreText = this.add.text(54, HUD_H/2, '0', {
+      fontSize:'34px', fontFamily:'Arial Black, sans-serif',
+      color:'#ffd700', stroke:'#6b3fa0', strokeThickness:4,
+    }).setOrigin(0,0.5).setDepth(30);
+  }
+
+  _buildTimerBar() {
+    const y = HUD_H + TIMER_H/2;
+    this.timerBg   = this.add.graphics().setDepth(30);
+    this.timerFill = this.add.graphics().setDepth(31);
+    this._drawTimerBar(1);
+  }
+
+  _drawTimerBar(ratio) {
+    const x=BOARD_LEFT, y=HUD_H+2, h=TIMER_H-4, w=BOARD_PX;
+    const fw = Math.max(0, w*ratio);
+    const col = timerColor(ratio);
+    this.timerBg.clear();
+    this.timerBg.fillStyle(0x2d1b69,0.7);
+    this.timerBg.fillRoundedRect(x-2,y-2,w+4,h+4,9);
+    this.timerFill.clear();
+    if (fw>0) {
+      this.timerFill.fillStyle(col,1);
+      this.timerFill.fillRoundedRect(x,y,fw,h,7);
+      // Sheen stripe
+      this.timerFill.fillStyle(0xffffff,0.18);
+      this.timerFill.fillRoundedRect(x,y,fw,h*0.45,7);
+    }
+  }
+
+  // ── Highlights: paint full cells green (and gold for reachable coin) ──
+  _refreshHighlights() {
+    this.validMoves = getValidMoves(this.knightCol, this.knightRow);
+    this.hlGraphics.clear();
+
+    // Kill old tween references
+    if (this._hlTween) { this._hlTween.stop(); this._hlTween = null; }
+
+    // Draw green fills
+    this.validMoves.forEach(({col,row}) => {
+      const {x,y} = cellCenter(col,row);
+      const isCoin = (col===this.coinCol && row===this.coinRow);
+      // Full-cell fill
+      this.hlGraphics.fillStyle(isCoin ? C.coinReach : C.jumpGreen, 0.72);
+      this.hlGraphics.fillRect(x-CELL_PX/2+1, y-CELL_PX/2+1, CELL_PX-2, CELL_PX-2);
+      // Thick border
+      this.hlGraphics.lineStyle(4, isCoin ? C.goldDark : C.jumpDark, 1);
+      this.hlGraphics.strokeRect(x-CELL_PX/2+2, y-CELL_PX/2+2, CELL_PX-4, CELL_PX-4);
+    });
+
+    // Pulse the highlight layer alpha
+    this._hlTween = this.tweens.add({
+      targets: this.hlGraphics,
+      alpha: { from:0.8, to:1 },
+      duration: 500,
       yoyo: true,
       repeat: -1,
       ease: 'Sine.inOut',
     });
-    this.tweens.add({
-      targets: this.coinSprite,
-      angle: 360,
-      duration: 4000,
+  }
+
+  _spawnCoin() {
+    if (this.coinSprite) { this.coinSprite.destroy(); this.coinSprite=null; }
+    if (this.coinRing)   { this.coinRing.destroy();   this.coinRing=null;   }
+    if (this._ringTween) { this._ringTween.stop(); this._ringTween=null; }
+
+    const occupied = new Set([`${this.knightCol},${this.knightRow}`]);
+    const empties = [];
+    for (let row=0;row<BOARD_SIZE;row++)
+      for (let col=0;col<BOARD_SIZE;col++)
+        if (!occupied.has(`${col},${row}`)) empties.push({col,row});
+    if (!empties.length) return;
+
+    const spot = Phaser.Utils.Array.GetRandom(empties);
+    const {x,y} = cellCenter(spot.col, spot.row);
+    this.coinCol = spot.col;
+    this.coinRow = spot.row;
+
+    // Big pulsing ring around the coin
+    this.coinRing = this.add.circle(x, y, CELL_PX*0.44, C.gold, 0.3)
+      .setStrokeStyle(4, C.gold, 0.9).setDepth(14);
+    this._ringTween = this.tweens.add({
+      targets: this.coinRing,
+      scale: { from:0.85, to:1.15 },
+      alpha: { from:0.25, to:0.6 },
+      duration: 550,
+      yoyo: true,
       repeat: -1,
     });
+
+    // Coin — bigger than before
+    const scale = (CELL_PX*0.75) / 44;
+    this.coinSprite = this.add.image(x,y,'coin').setDepth(15).setScale(scale);
+    this.tweens.add({ targets:this.coinSprite, y:y-5, duration:700, yoyo:true, repeat:-1, ease:'Sine.inOut' });
+    this.tweens.add({ targets:this.coinSprite, angle:8, duration:400, yoyo:true, repeat:-1 });
   }
 
-  onBoardTap(x, y) {
-    if (this.isOver || this.isJumping) return;
-    const cell = colRowFromPoint(x, y);
+  _onTap(x,y) {
+    if (this.isOver||this.isJumping) return;
+    const cell = colRowFromPoint(x,y);
     if (!cell) return;
-    const valid = this.validMoves.some(m => m.col === cell.col && m.row === cell.row);
-    if (!valid) return;
-    this.jumpTo(cell.col, cell.row);
+    const valid = this.validMoves.some(m=>m.col===cell.col&&m.row===cell.row);
+    if (!valid) {
+      // Wiggle the knight to signal "wrong tap"
+      this.tweens.add({ targets:this.knight, x:this.knight.x+6, duration:50, yoyo:true, repeat:3 });
+      return;
+    }
+    this._jumpTo(cell.col, cell.row);
   }
 
-  jumpTo(col, row) {
+  _jumpTo(col,row) {
     this.isJumping = true;
     SFX.jump();
-    const from = cellCenter(this.knightCol, this.knightRow);
-    const to = cellCenter(col, row);
+    const to = cellCenter(col,row);
     this.knightCol = col;
     this.knightRow = row;
 
+    // Arc jump: go up in the middle
+    const midX = (this.knight.x + to.x)/2;
+    const midY = Math.min(this.knight.y, to.y) - CELL_PX*0.6;
     this.tweens.add({
       targets: this.knight,
-      x: to.x,
-      y: to.y,
-      duration: 180,
-      ease: 'Quad.out',
+      x: [this.knight.x, midX, to.x],
+      y: [this.knight.y, midY, to.y],
+      duration: 220,
+      ease: 'Quad.inOut',
       onComplete: () => {
         this.isJumping = false;
-        this.refreshHighlights();
-        if (this.coinSprite && col === this.coinCol && row === this.coinRow) {
-          this.collectCoin();
-        }
+        const hasCoin = col===this.coinCol && row===this.coinRow;
+        this._refreshHighlights();
+        if (hasCoin) this._collectCoin();
       },
     });
-    this.tweens.add({
-      targets: this.knight,
-      scaleX: this.knight.scaleX * 1.15,
-      scaleY: this.knight.scaleY * 1.15,
-      duration: 90,
-      yoyo: true,
-      ease: 'Sine.out',
-    });
+    // Squish on landing
+    this.tweens.add({ targets:this.knight, scaleX:this.knight.scaleX*0.8, scaleY:this.knight.scaleY*1.2, duration:110, yoyo:true });
   }
 
-  collectCoin() {
+  _collectCoin() {
     if (!this.coinSprite) return;
-    const { x, y } = cellCenter(this.coinCol, this.coinRow);
-    this.coinSprite.destroy();
-    this.coinSprite = null;
+    const {x,y} = cellCenter(this.coinCol, this.coinRow);
+    if (this.coinSprite) { this.coinSprite.destroy(); this.coinSprite=null; }
+    if (this.coinRing)   { this.coinRing.destroy();   this.coinRing=null;   }
     this.score++;
     this.scoreText.setText(String(this.score));
     SFX.coin();
 
-    for (let i = 0; i < 6; i++) {
-      const angle = (Math.PI * 2 * i) / 6;
-      const dot = this.add.circle(x, y, 5, 0xffd700, 1).setDepth(25);
-      this.tweens.add({
-        targets: dot,
-        x: x + Math.cos(angle) * 36,
-        y: y + Math.sin(angle) * 36,
-        alpha: 0,
-        scale: 0.2,
-        duration: 350,
-        onComplete: () => dot.destroy(),
-      });
+    // Score pop
+    const pop = this.add.text(x,y-16,'+1',{
+      fontSize:'26px', fontFamily:'Arial Black', color:'#ffd700', stroke:'#000000', strokeThickness:4,
+    }).setOrigin(0.5).setDepth(50);
+    this.tweens.add({ targets:pop, y:y-50, alpha:0, duration:700, onComplete:()=>pop.destroy() });
+
+    // Burst
+    for (let i=0;i<8;i++) {
+      const a=(Math.PI*2*i)/8;
+      const dot=this.add.circle(x,y,6,C.gold,1).setDepth(25);
+      this.tweens.add({ targets:dot, x:x+Math.cos(a)*44, y:y+Math.sin(a)*44, alpha:0, scale:0.3, duration:400, onComplete:()=>dot.destroy() });
     }
 
-    this.spawnCoin();
+    // Score text bounce
+    this.tweens.add({ targets:this.scoreText, scaleX:1.4, scaleY:1.4, duration:100, yoyo:true });
+
+    this._spawnCoin();
+    this._refreshHighlights(); // re-highlight including new coin position
   }
 
   endGame() {
     if (this.isOver) return;
     this.isOver = true;
-    if (this.score >= 10) SFX.endWin();
-    else SFX.endBoop();
-    this.time.delayedCall(400, () => {
-      this.scene.start('EndScene', { score: this.score });
-    });
+    if (this._hlTween) this._hlTween.stop();
+    this.hlGraphics.clear();
+    if (this.score>=10) SFX.endWin(); else SFX.endBoop();
+    this.time.delayedCall(400, ()=>this.scene.start('EndScene',{score:this.score}));
   }
 
   update() {
     if (this.isOver) return;
+    const elapsed = (this.time.now-this.startTime)/1000;
+    this.timeRemaining = Math.max(0, GAME_SECONDS-elapsed);
+    const ratio = this.timeRemaining/GAME_SECONDS;
+    this._drawTimerBar(ratio);
 
-    const elapsed = (this.time.now - this.startTime) / 1000;
-    this.timeRemaining = Math.max(0, GAME_SECONDS - elapsed);
-    const ratio = this.timeRemaining / GAME_SECONDS;
-    this.drawTimerBar(ratio);
-
-    if (this.timeRemaining <= 5 && this.timeRemaining > 0) {
-      const sec = Math.ceil(this.timeRemaining);
-      if (sec !== this.lastTickSecond) {
-        this.lastTickSecond = sec;
-        SFX.tick();
-      }
-      const shake = Math.sin(this.time.now / 40) * 2;
-      this.timerBarFill.x = shake;
-      this.timerBarBg.x = shake;
+    if (this.timeRemaining<=5 && this.timeRemaining>0) {
+      const sec=Math.ceil(this.timeRemaining);
+      if (sec!==this.lastTickSecond) { this.lastTickSecond=sec; SFX.tick(); }
+      const shake=Math.sin(this.time.now/40)*2;
+      this.timerFill.x=shake; this.timerBg.x=shake;
     } else {
-      this.timerBarFill.x = 0;
-      this.timerBarBg.x = 0;
+      this.timerFill.x=0; this.timerBg.x=0;
     }
-
-    if (this.timeRemaining <= 0) this.endGame();
+    if (this.timeRemaining<=0) this.endGame();
   }
 }
 
-// ── End screen ────────────────────────────────────────────────
+// ── END ───────────────────────────────────────────────────────
 class EndScene extends Phaser.Scene {
   constructor() { super('EndScene'); }
-
   preload() { makeTextures(this); }
-
   create(data) {
-    const score = (data && data.score) || 0;
-    addPinkBackground(this);
-    this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x2d1b69, 0.4);
+    const score=(data&&data.score)||0;
+    addBg(this);
+    this.add.rectangle(GW/2,GH/2,GW,GH,0x2d1b69,0.38);
+    if (score>=10) this._confetti();
 
-    if (score >= 15) spawnConfetti(this);
-
-    this.add.text(GW / 2, GH / 2 - 130, "\u23F0", { fontSize: '64px' }).setOrigin(0.5);
-    this.add.text(GW / 2, GH / 2 - 60, "Time's up!", {
-      fontSize: '40px', fontFamily: 'Arial Black, sans-serif',
-      color: '#ffb3d9', stroke: '#ffffff', strokeThickness: 5,
+    this.add.text(GW/2, GH/2-140, '⏰', {fontSize:'60px'}).setOrigin(0.5);
+    this.add.text(GW/2, GH/2-70, '¡Se acabó el tiempo!', {
+      fontSize:'36px', fontFamily:'Arial Black', color:'#ffb3d9', stroke:'#ffffff', strokeThickness:5,
     }).setOrigin(0.5);
 
-    this.add.image(GW / 2 - 50, GH / 2 + 10, 'coin').setScale(1.4);
-    this.add.text(GW / 2 + 20, GH / 2 + 10, String(score), {
-      fontSize: '64px', fontFamily: 'Arial Black, sans-serif', color: '#ffd700',
-      stroke: '#6b3fa0', strokeThickness: 6,
-    }).setOrigin(0, 0.5);
+    this.add.image(GW/2-56,GH/2+12,'coin').setScale(1.6);
+    this.add.text(GW/2+10,GH/2+12,String(score),{
+      fontSize:'70px', fontFamily:'Arial Black', color:'#ffd700', stroke:'#6b3fa0', strokeThickness:6,
+    }).setOrigin(0,0.5);
 
-    const stars = starCountForScore(score);
-    for (let i = 0; i < 3; i++) {
-      this.add.text(GW / 2 - 44 + i * 44, GH / 2 + 80, i < stars ? '\u2B50' : '\u2606', {
-        fontSize: '36px', color: i < stars ? '#ffd700' : '#ffffff44',
+    const stars = score>=10?3:score>=5?2:1;
+    for (let i=0;i<3;i++)
+      this.add.text(GW/2-44+i*44, GH/2+90, i<stars?'⭐':'☆',{
+        fontSize:'36px', color:i<stars?'#ffd700':'#ffffff44',
       }).setOrigin(0.5);
+
+    buildPlayButton(this, GW/2-80, GH/2+170, 52, ()=>tryStartGame(this,['EndScene']));
+    const home=this.add.circle(GW/2+80,GH/2+170,48,0xc878d8).setInteractive({useHandCursor:true});
+    home.setStrokeStyle(2,0xffffff,0.4);
+    this.add.text(GW/2+80,GH/2+170,'🏠',{fontSize:'30px'}).setOrigin(0.5);
+    home.on('pointerdown',()=>this.scene.start('MenuScene'));
+  }
+  _confetti() {
+    const colors=[0xff6eb4,0xffd700,0xffb3d9,0xc878d8,0xffee88];
+    for (let i=0;i<30;i++) {
+      const p=this.add.circle(Phaser.Math.Between(40,GW-40),-20,Phaser.Math.Between(4,10),colors[i%colors.length],0.9);
+      this.tweens.add({targets:p,y:GH+30,angle:Phaser.Math.Between(-360,360),duration:Phaser.Math.Between(2000,4000),delay:Phaser.Math.Between(0,1200),onComplete:()=>p.destroy()});
     }
-
-    buildStyledPlayButton(this, GW / 2 - 80, GH / 2 + 160, 52, () => tryStartGame(this, ['EndScene']));
-
-    const home = this.add.circle(GW / 2 + 80, GH / 2 + 160, 48, 0xc878d8)
-      .setInteractive({ useHandCursor: true });
-    home.setStrokeStyle(2, 0xffffff, 0.4);
-    this.add.text(GW / 2 + 80, GH / 2 + 160, '\u2B50', { fontSize: '32px' }).setOrigin(0.5);
-    home.on('pointerdown', () => this.scene.start('MenuScene'));
   }
 }
 
-// ── Daily limit screen ─────────────────────────────────────────
+// ── DAILY LIMIT ───────────────────────────────────────────────
 class DailyLimitScene extends Phaser.Scene {
   constructor() { super('DailyLimitScene'); }
-
   preload() { makeTextures(this); }
-
   create() {
-    addPinkBackground(this);
-    this.add.rectangle(GW / 2, GH / 2, GW, GH, 0x2d1b69, 0.45);
-
-    for (let i = 0; i < 8; i++) {
-      this.add.text(Phaser.Math.Between(60, GW - 60), Phaser.Math.Between(40, 200), '\u2728', {
-        fontSize: Phaser.Math.Between(18, 28) + 'px', color: '#ffffff55',
-      }).setOrigin(0.5);
-    }
-
-    const moon = this.add.text(GW / 2, GH / 2 - 100, '\uD83C\uDF19', { fontSize: '96px' })
-      .setOrigin(0.5).setInteractive();
-    this.add.text(GW / 2, GH / 2 + 10, '\u00A1Hasta ma\u00F1ana!', {
-      fontSize: '44px', fontFamily: 'Arial Black, sans-serif',
-      color: '#f8b4e8', stroke: '#2d1b69', strokeThickness: 6,
-    }).setOrigin(0.5);
-    this.add.text(GW / 2, GH / 2 + 80, '\uD83D\uDE34', { fontSize: '48px' }).setOrigin(0.5);
-
-    const home = this.add.circle(GW / 2, GH / 2 + 170, 52, 0xff6eb4)
-      .setInteractive({ useHandCursor: true });
-    home.setStrokeStyle(2, 0xffffff, 0.35);
-    this.add.text(GW / 2, GH / 2 + 170, '\u2B50', { fontSize: '40px' }).setOrigin(0.5);
-    home.on('pointerdown', () => this.scene.start('MenuScene'));
-
-    this.add.text(8, GH - 6, 'v' + VERSION, {
-      fontSize: '13px', fontFamily: 'monospace', color: '#ffffff44',
-    }).setOrigin(0, 1);
-
-    let holdEvt = null;
-    moon.on('pointerdown', () => {
-      holdEvt = this.time.delayedCall(3000, () => { DailyPlays.reset(); this.scene.start('MenuScene'); });
-    });
-    const cancelHold = () => { if (holdEvt) { holdEvt.remove(); holdEvt = null; } };
-    moon.on('pointerup', cancelHold);
-    moon.on('pointerout', cancelHold);
+    addBg(this);
+    this.add.rectangle(GW/2,GH/2,GW,GH,0x2d1b69,0.45);
+    this.add.text(GW/2,GH/2-100,'🌙',{fontSize:'96px'}).setOrigin(0.5).setInteractive()
+      .on('pointerdown',()=>{ const h=this.time.delayedCall(3000,()=>{DailyPlays.reset();this.scene.start('MenuScene');}); this.once('pointerup',()=>h.remove()); });
+    this.add.text(GW/2,GH/2+10,'¡Hasta mañana!',{fontSize:'44px',fontFamily:'Arial Black',color:'#f8b4e8',stroke:'#2d1b69',strokeThickness:6}).setOrigin(0.5);
+    this.add.text(GW/2,GH/2+80,'😴',{fontSize:'48px'}).setOrigin(0.5);
+    const home=this.add.circle(GW/2,GH/2+170,52,0xff6eb4).setInteractive({useHandCursor:true});
+    this.add.text(GW/2,GH/2+170,'⭐',{fontSize:'40px'}).setOrigin(0.5);
+    home.on('pointerdown',()=>this.scene.start('MenuScene'));
+    this.add.text(8,GH-6,'v'+VERSION,{fontSize:'13px',fontFamily:'monospace',color:'#ffffff44'}).setOrigin(0,1);
   }
 }
 
-// ── Boot ──────────────────────────────────────────────────────
 class BootScene extends Phaser.Scene {
   constructor() { super('BootScene'); }
-  create() {
-    this.scene.start('MenuScene');
-  }
+  create() { this.scene.start('MenuScene'); }
 }
 
 new Phaser.Game({
   type: Phaser.AUTO,
   parent: 'game',
   backgroundColor: '#c878d8',
-  scale: {
-    mode: Phaser.Scale.FIT,
-    autoCenter: Phaser.Scale.CENTER_BOTH,
-    width: GW,
-    height: GH,
-  },
+  scale: { mode:Phaser.Scale.FIT, autoCenter:Phaser.Scale.CENTER_BOTH, width:GW, height:GH },
   scene: [BootScene, MenuScene, GameScene, EndScene, DailyLimitScene],
+  input: { activePointers: 1 },
 });
