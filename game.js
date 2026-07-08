@@ -1,10 +1,11 @@
 // =============================================================
-//  Pink Knight Hop — v1.3  (goal-based: collect 10 coins)
+//  Pink Knight Hop — v1.4  (goal-based: collect 10 coins)
 // =============================================================
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.3';
+const VERSION = '1.4';
+const HINT_IDLE_MS = 4000; // show solution-path hint after this many ms of no taps
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
 const MAX_PLAYS_PER_DAY = 5;
@@ -102,6 +103,36 @@ function colRowFromPoint(x,y) {
   const row=Math.floor((y-BOARD_TOP)/CELL_PX);
   if (col<0||col>=BOARD_SIZE||row<0||row>=BOARD_SIZE) return null;
   return {col,row};
+}
+// Shortest knight-move path from (startCol,startRow) to (goalCol,goalRow), BFS.
+// Returns an array of {col,row} including both endpoints, or null if none.
+function bfsKnightPath(startCol,startRow,goalCol,goalRow) {
+  if (startCol===goalCol && startRow===goalRow) return [{col:startCol,row:startRow}];
+  const key=(c,r)=>c+','+r;
+  const visited=new Set([key(startCol,startRow)]);
+  const prev=new Map();
+  const queue=[{col:startCol,row:startRow}];
+  while (queue.length) {
+    const cur=queue.shift();
+    for (const {col,row} of getValidMoves(cur.col,cur.row)) {
+      const k=key(col,row);
+      if (visited.has(k)) continue;
+      visited.add(k);
+      prev.set(k,cur);
+      if (col===goalCol && row===goalRow) {
+        const path=[{col,row}];
+        let ck=k;
+        while (prev.has(ck)) {
+          const p=prev.get(ck);
+          path.unshift(p);
+          ck=key(p.col,p.row);
+        }
+        return path;
+      }
+      queue.push({col,row});
+    }
+  }
+  return null;
 }
 
 // ── Textures ──────────────────────────────────────────────────
@@ -257,6 +288,9 @@ class GameScene extends Phaser.Scene {
     this.validMoves = [];
     this.coinCol = -1;
     this.coinRow = -1;
+    this.hintMarkers = [];
+    this.hintTweens = [];
+    this.idleTimer = null;
 
     this._buildBoard();
     this._buildHUD();
@@ -282,6 +316,72 @@ class GameScene extends Phaser.Scene {
     });
 
     this.input.on('pointerdown', (p) => this._onTap(p.x, p.y));
+    this._armIdleHint();
+  }
+
+  // ── Idle hint: after a few quiet seconds, reveal the path to the coin ──
+  _armIdleHint() {
+    if (this.idleTimer) { this.idleTimer.remove(); this.idleTimer = null; }
+    this.idleTimer = this.time.delayedCall(HINT_IDLE_MS, () => this._showHint());
+  }
+
+  _clearHintMarkers() {
+    this.hintMarkers.forEach(o => o.destroy());
+    this.hintMarkers = [];
+    this.hintTweens.forEach(t => t.stop());
+    this.hintTweens = [];
+  }
+
+  _showHint() {
+    if (this.isOver || this.isJumping) { this._armIdleHint(); return; }
+    this._clearHintMarkers();
+
+    const directlyReachable = this.validMoves.some(m => m.col===this.coinCol && m.row===this.coinRow);
+    if (directlyReachable) { this._armIdleHint(); return; } // already obvious — coin cell glows gold
+
+    const path = bfsKnightPath(this.knightCol, this.knightRow, this.coinCol, this.coinRow);
+    if (path && path.length >= 2) {
+      SFX.hint();
+      this._drawHintPath(path);
+    }
+    this._armIdleHint(); // keep refreshing until the player moves
+  }
+
+  _drawHintPath(path) {
+    // path[0] = knight's current cell. path[1] = the next square to tap (already
+    // a legal move, highlighted green). path[2+] = the rest of the route preview.
+    const next = path[1];
+    const { x: nx, y: ny } = cellCenter(next.col, next.row);
+
+    const ring = this.add.circle(nx, ny, CELL_PX*0.4, 0x00e5ff, 0)
+      .setStrokeStyle(5, 0x00e5ff, 1).setDepth(12);
+    const ringTween = this.tweens.add({
+      targets: ring, scale: { from:0.85, to:1.18 }, alpha: { from:0.9, to:0.25 },
+      duration: 480, yoyo: true, repeat: -1,
+    });
+
+    const arrow = this.add.text(nx, ny - CELL_PX*0.72, '⬇️', {
+      fontSize: Math.floor(CELL_PX*0.42)+'px',
+    }).setOrigin(0.5).setDepth(13);
+    const arrowTween = this.tweens.add({
+      targets: arrow, y: ny - CELL_PX*0.5, duration: 420, yoyo: true, repeat: -1,
+    });
+
+    this.hintMarkers.push(ring, arrow);
+    this.hintTweens.push(ringTween, arrowTween);
+
+    // Faint numbered footprints for the rest of the route, if the coin is more
+    // than one jump away — shows the whole solution path, not just the next step.
+    for (let i = 2; i < path.length; i++) {
+      const { col, row } = path[i];
+      const { x, y } = cellCenter(col, row);
+      const dot = this.add.circle(x, y, CELL_PX*0.22, 0xffffff, 0.35)
+        .setStrokeStyle(2, 0xffffff, 0.55).setDepth(11);
+      const label = this.add.text(x, y, String(i), {
+        fontSize: Math.floor(CELL_PX*0.22)+'px', fontFamily: 'Arial Black, sans-serif', color: '#6b3fa0',
+      }).setOrigin(0.5).setDepth(12);
+      this.hintMarkers.push(dot, label);
+    }
   }
 
   _buildBoard() {
@@ -413,6 +513,8 @@ class GameScene extends Phaser.Scene {
 
   _onTap(x,y) {
     if (this.isOver||this.isJumping) return;
+    this._clearHintMarkers();
+    this._armIdleHint();
     const cell = colRowFromPoint(x,y);
     if (!cell) return;
     const valid = this.validMoves.some(m=>m.col===cell.col&&m.row===cell.row);
@@ -445,6 +547,7 @@ class GameScene extends Phaser.Scene {
         const hasCoin = col===this.coinCol && row===this.coinRow;
         this._refreshHighlights();
         if (hasCoin) this._collectCoin();
+        this._armIdleHint();
       },
     });
     // Squish on landing
@@ -489,6 +592,8 @@ class GameScene extends Phaser.Scene {
   endGame() {
     if (this.isOver) return;
     this.isOver = true;
+    if (this.idleTimer) { this.idleTimer.remove(); this.idleTimer = null; }
+    this._clearHintMarkers();
     if (this._hlTween) this._hlTween.stop();
     this.hlGraphics.clear();
     SFX.win();
