@@ -4,7 +4,7 @@
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.4';
+const VERSION = '1.5';
 const HINT_IDLE_MS = 4000; // show solution-path hint after this many ms of no taps
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
@@ -137,18 +137,22 @@ function bfsKnightPath(startCol,startRow,goalCol,goalRow) {
 
 // ── Textures ──────────────────────────────────────────────────
 function makeTextures(scene) {
-  // Knight — poster-style pink horse (Safari-safe: no fillPath)
-  if (!scene.textures.exists('knight')) {
+  // Knight body + kid face overlay (shared KidAvatar)
+  if (scene.textures.exists('knight')) scene.textures.remove('knight');
+  {
     const g = scene.make.graphics({x:0,y:0,add:false});
-    g.fillStyle(C.knightDark,1); g.fillEllipse(24,50,20,6);      // shadow
-    g.fillStyle(C.knightDark,1); g.fillRoundedRect(10,20,28,28,10); // body dark
-    g.fillStyle(C.knight,1);     g.fillRoundedRect(8,16,30,30,12);  // body
-    g.fillStyle(C.knightDark,1); g.fillTriangle(8,20,4,6,16,16);    // ear dark
-    g.fillStyle(C.knight,1);     g.fillTriangle(10,18,6,4,18,14);   // ear
-    g.fillStyle(0xffffff,1);     g.fillCircle(30,24,5);             // eye white
-    g.fillStyle(0x333333,1);     g.fillCircle(31,24,2.5);           // pupil
-    g.fillStyle(0xffeeaa,1);     g.fillCircle(32,23,1);             // eye shine
-    g.fillStyle(C.knightDark,1); g.fillRoundedRect(34,10,10,14,4); // mane
+    g.fillStyle(C.knightDark,1); g.fillEllipse(24,50,20,6);
+    g.fillStyle(C.knightDark,1); g.fillRoundedRect(10,20,28,28,10);
+    g.fillStyle(C.knight,1);     g.fillRoundedRect(8,16,30,30,12);
+    g.fillStyle(C.knightDark,1); g.fillTriangle(8,20,4,6,16,16);
+    g.fillStyle(C.knight,1);     g.fillTriangle(10,18,6,4,18,14);
+    g.fillStyle(C.knightDark,1); g.fillRoundedRect(34,10,10,14,4);
+    if (typeof KidAvatar !== 'undefined') {
+      KidAvatar.drawHead(g, 26, 26, 12, KidAvatar.load());
+    } else {
+      g.fillStyle(0xffffff,1); g.fillCircle(30,24,5);
+      g.fillStyle(0x333333,1); g.fillCircle(31,24,2.5);
+    }
     g.generateTexture('knight',52,56);
     g.destroy();
   }
