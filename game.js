@@ -4,11 +4,12 @@
 
 const GW = 1024;
 const GH = 576;
-const VERSION = '1.5';
+const VERSION = '1.6';
 const HINT_IDLE_MS = 4000; // show solution-path hint after this many ms of no taps
 const GAME_ID = 'knightHop';
 const PLAY_STORAGE_KEY = 'phaserlab_daily_plays';
 const MAX_PLAYS_PER_DAY = 5;
+const HUB_URL = 'https://codersplug.github.io/GamesHub/';
 
 const BOARD_SIZE = 8;
 const COIN_GOAL = 10;
@@ -195,12 +196,23 @@ function addBg(scene) {
   scene.add.rectangle(GW/2,GH*0.3,GW,GH*0.55,0xc878d8,0.55).setDepth(-100);
 }
 
+function addHubHomeButton(scene, x = 44, y = 40) {
+  const hit = scene.add.circle(x, y, 30, 0x000000, 0.3)
+    .setStrokeStyle(3, 0xffd700, 0.9)
+    .setInteractive({ useHandCursor: true })
+    .setDepth(200);
+  scene.add.text(x, y, '🏠', { fontSize: '28px' }).setOrigin(0.5).setDepth(201);
+  hit.on('pointerdown', () => { window.location.href = HUB_URL; });
+  return hit;
+}
+
 // ── MENU ─────────────────────────────────────────────────────
 class MenuScene extends Phaser.Scene {
   constructor() { super('MenuScene'); }
   preload() { makeTextures(this); }
   create() {
     addBg(this);
+    addHubHomeButton(this);
 
     // Mini tutorial strip — board squares demo
     this._buildHowToPlay();
@@ -637,7 +649,7 @@ class EndScene extends Phaser.Scene {
     const home=this.add.circle(GW/2+80,GH/2+170,48,0xc878d8).setInteractive({useHandCursor:true});
     home.setStrokeStyle(2,0xffffff,0.4);
     this.add.text(GW/2+80,GH/2+170,'🏠',{fontSize:'30px'}).setOrigin(0.5);
-    home.on('pointerdown',()=>this.scene.start('MenuScene'));
+    home.on('pointerdown',()=>{ window.location.href = HUB_URL; });
   }
   _confetti() {
     const colors=[0xff6eb4,0xffd700,0xffb3d9,0xc878d8,0xffee88];
@@ -660,8 +672,8 @@ class DailyLimitScene extends Phaser.Scene {
     this.add.text(GW/2,GH/2+10,'¡Hasta mañana!',{fontSize:'44px',fontFamily:'Arial Black',color:'#f8b4e8',stroke:'#2d1b69',strokeThickness:6}).setOrigin(0.5);
     this.add.text(GW/2,GH/2+80,'😴',{fontSize:'48px'}).setOrigin(0.5);
     const home=this.add.circle(GW/2,GH/2+170,52,0xff6eb4).setInteractive({useHandCursor:true});
-    this.add.text(GW/2,GH/2+170,'⭐',{fontSize:'40px'}).setOrigin(0.5);
-    home.on('pointerdown',()=>this.scene.start('MenuScene'));
+    this.add.text(GW/2,GH/2+170,'🏠',{fontSize:'40px'}).setOrigin(0.5);
+    home.on('pointerdown',()=>{ window.location.href = HUB_URL; });
     this.add.text(8,GH-6,'v'+VERSION,{fontSize:'13px',fontFamily:'monospace',color:'#ffffff44'}).setOrigin(0,1);
   }
 }
